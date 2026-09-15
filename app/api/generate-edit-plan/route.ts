@@ -21,10 +21,12 @@ interface EditPlanSegment {
 }
 
 const CANDIDATE_MODELS = [
-  'gemini-flash-latest',
   'gemini-3.8-flash',
   'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
 ];
+
+const waitMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Intelligent local fallback when upstream Gemini endpoints experience 503 spikes.
@@ -137,70 +139,91 @@ Generate the structured JSON edit plan following the schema.`;
         },
       });
 
-      // Try candidate models with fallback
+      // Try candidate models with fallback and retry for transient errors
       for (const modelName of CANDIDATE_MODELS) {
-        try {
-          const response = await ai.models.generateContent({
-            model: modelName,
-            contents: userPrompt,
-            config: {
-              systemInstruction,
-              temperature: 0.2,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  segments: {
-                    type: Type.ARRAY,
-                    description: 'The ordered sequence of video clips and images to be combined in the final edit.',
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        sourceFile: {
-                          type: Type.STRING,
-                          description: 'The exact filename of the source file from the uploaded list.',
+        let attempts = 0;
+        const maxAttempts = 2;
+
+        while (attempts < maxAttempts) {
+          attempts++;
+          try {
+            const response = await ai.models.generateContent({
+              model: modelName,
+              contents: userPrompt,
+              config: {
+                systemInstruction,
+                temperature: 0.2,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    segments: {
+                      type: Type.ARRAY,
+                      description: 'The ordered sequence of video clips and images to be combined in the final edit.',
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          sourceFile: {
+                            type: Type.STRING,
+                            description: 'The exact filename of the source file from the uploaded list.',
+                          },
+                          type: {
+                            type: Type.STRING,
+                            enum: ['video', 'image'],
+                            description: 'The media type: video or image.',
+                          },
+                          startTime: {
+                            type: Type.NUMBER,
+                            description: 'Start offset time in seconds in the source file. 0 if no trim.',
+                          },
+                          duration: {
+                            type: Type.NUMBER,
+                            description: 'Duration in seconds this segment appears in the final output.',
+                          },
+                          transitionIn: {
+                            type: Type.STRING,
+                            enum: ['none', 'fade', 'cut'],
+                            description: 'Transition effect when entering this segment.',
+                          },
                         },
-                        type: {
-                          type: Type.STRING,
-                          enum: ['video', 'image'],
-                          description: 'The media type: video or image.',
-                        },
-                        startTime: {
-                          type: Type.NUMBER,
-                          description: 'Start offset time in seconds in the source file. 0 if no trim.',
-                        },
-                        duration: {
-                          type: Type.NUMBER,
-                          description: 'Duration in seconds this segment appears in the final output.',
-                        },
-                        transitionIn: {
-                          type: Type.STRING,
-                          enum: ['none', 'fade', 'cut'],
-                          description: 'Transition effect when entering this segment.',
-                        },
+                        required: ['sourceFile', 'type', 'startTime', 'duration', 'transitionIn'],
                       },
-                      required: ['sourceFile', 'type', 'startTime', 'duration', 'transitionIn'],
+                    },
+                    backgroundMusic: {
+                      type: Type.STRING,
+                      nullable: true,
+                      description: 'The exact filename of the background audio file, or null if none.',
                     },
                   },
-                  backgroundMusic: {
-                    type: Type.STRING,
-                    nullable: true,
-                    description: 'The exact filename of the background audio file, or null if none.',
-                  },
+                  required: ['segments'],
                 },
-                required: ['segments'],
               },
-            },
-          });
+            });
 
-          if (response.text) {
-            responseText = response.text;
-            break; // Success!
+            if (response.text) {
+              responseText = response.text;
+              break; // Success!
+            }
+          } catch (err: unknown) {
+            geminiError = err;
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const isTransient =
+              errMsg.includes('503') ||
+              errMsg.includes('429') ||
+              errMsg.toLowerCase().includes('high demand') ||
+              errMsg.toLowerCase().includes('unavailable');
+
+            if (isTransient && attempts < maxAttempts) {
+              await waitMs(600 * attempts);
+              continue;
+            }
+            // Move to next candidate model
+            break;
           }
-        } catch (err: unknown) {
-          geminiError = err;
-          console.warn(`Model ${modelName} returned temporary error:`, err);
-          // Try next model in loop
+        }
+
+        if (responseText) {
+          break;
         }
       }
     }
