@@ -1,0 +1,6 @@
+{
+  "name": "AI Clip Editor",
+  "description": "Browser-based short-video editor with AI-powered edit planning and IndexedDB media storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
